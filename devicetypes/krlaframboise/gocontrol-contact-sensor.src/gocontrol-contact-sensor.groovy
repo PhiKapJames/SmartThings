@@ -1,5 +1,5 @@
 /**
- *  GoControl Contact Sensor v1.8.3
+ *  GoControl Contact Sensor v1.9.2
  *  (WADWAZ-1)
  *
  *  Author: 
@@ -9,6 +9,15 @@
  *    https://community.smartthings.com/t/release-gocontrol-door-window-sensor-motion-sensor-and-siren-dth/50728?u=krlaframboise
  *
  *  Changelog:
+ *
+ *    1.9.2 (04/23/2017)
+ *    	- SmartThings broke parse method response handling so switched to sendhubaction.
+ *
+ *    1.9.1 (04/20/2017)
+ *			- Added workaround for ST Health Check bug.
+ *
+ *    1.9 (04/08/2017)
+ *      - Added child device functionality for external contact. 
  *
  *    1.8.3 (03/12/2017)
  *      - Adjusted health check to allow it to skip a checkin before going offline.
@@ -88,7 +97,7 @@ metadata {
 			title: "Main Contact Behavior:",
 			defaultValue: "Last Changed",
 			required: false,
-			options: ["Last Changed Contact (Default)", "Internal Contact Only", "External Contact Only", "Both Contacts Closed", "Both Contacts Open"]
+			options: ["Last Changed Contact (Default)", "Internal Contact Only", "External Contact Only", "Both Contacts Closed", "Both Contacts Open"]		
 		input "checkinInterval", "enum",
 			title: "Checkin Interval:",
 			defaultValue: checkinIntervalSetting,
@@ -101,6 +110,11 @@ metadata {
 			required: false,
 			displayDuringSetup: true,
 			options: checkinIntervalOptions.collect { it.name }
+		input "useExternalDevice", "bool", 
+			title: "Create Device for External Sensor?", 
+			defaultValue: false, 
+			displayDuringSetup: true, 
+			required: false
 		input "debugOutput", "bool", 
 			title: "Enable debug logging?", 
 			defaultValue: false, 
@@ -143,7 +157,48 @@ def updated() {
 	if (!isDuplicateCommand(state.lastUpdated, 3000)) {
 		state.lastUpdated = new Date().time
 		logTrace "updated()"
+		
+		if (useExternalDeviceSetting && !getChildDevices()) {
+			createChildDevice()
+			def child = getChildDevice()
+			if (child) {
+				log.debug "Updating"
+				child.update()
+			}
+			
+		}		
 	}
+}
+
+private void createChildDevice() {
+	try {
+		logDebug "Creating Child Device"
+		def options = [
+			completedSetup: true, 
+			label: "${device.label} - External",
+			isComponent: false
+		]
+		addChildDevice("krlaframboise", "GoControl External Contact Sensor", childDeviceNetworkId, null, options)	
+	}
+	catch (e) {
+		log.warn("You need to install the GoControl External Contact Sensor DTH in order to use this feature.\n$e")
+	}
+}
+
+def uninstalled() {
+	logTrace "Executing uninstalled()"
+	devices?.each {
+		logDebug "Removing ${it.displayName}"
+		deleteChildDevice(it.deviceNetworkId)
+	}
+}
+
+def childUninstalled() {
+	// Required to prevent warning on uninstall.
+}
+
+private getChildDeviceNetworkId() {
+	return "${device.deviceNetworkId}-ext"
 }
 
 def configure() {	
@@ -169,8 +224,8 @@ def configure() {
 }
 
 private initializeCheckin() {
-	// Set the Health Check interval so that it can be skipped once plus 2 minutes.
-	def checkInterval = ((checkinIntervalSettingMinutes * 2 * 60) + (2 * 60))
+	// Set the Health Check interval so that it can be skipped twice plus 5 minutes.
+	def checkInterval = ((checkinIntervalSettingMinutes * 3 * 60) + (5 * 60))
 	
 	sendEvent(name: "checkInterval", value: checkInterval, displayed: false, data: [protocol: "zwave", hubHardwareId: device.hub.hardwareID])
 }
@@ -193,6 +248,9 @@ def refresh() {
 
 def parse(String description) {		
 	def result = []
+	
+	sendEvent(name: "lastCheckin", value: convertToLocalTimeString(new Date()), displayed: false, isStateChange: true)
+	
 	if (description.startsWith("Err")) {
 		log.warn "Parse Error: $description"
 		result << createEvent(descriptionText: "$device.displayName $description", isStateChange: true)
@@ -205,22 +263,8 @@ def parse(String description) {
 		else {
 			logDebug "Unable to parse description: $description"
 		}
-	}
-	
-	if (!isDuplicateCommand(state.lastCheckinTime, 60000)) {
-		result << createLastCheckinEvent()
-	}
+	}	
 	return result
-}
-
-private createLastCheckinEvent() {
-	logDebug "Device Checked In"
-	state.lastCheckinTime = new Date().time
-	return createEvent(name: "lastCheckin", value: convertToLocalTimeString(new Date()), displayed: false)
-}
-
-private convertToLocalTimeString(dt) {
-	return dt.format("MM/dd/yyyy hh:mm:ss a", TimeZone.getTimeZone(location.timeZone.ID))
 }
 
 private getCommandClassVersions() {
@@ -254,7 +298,16 @@ def zwaveEvent(physicalgraph.zwave.commands.wakeupv2.WakeUpNotification cmd)
 	}
 	
 	cmds << wakeUpNoMoreInfoCmd()
-	return response(cmds)
+	return sendResponse(cmds)
+}
+
+private sendResponse(cmds) {
+	def actions = []
+	cmds?.each { cmd ->
+		actions << new physicalgraph.device.HubAction(cmd)
+	}	
+	sendHubCommand(actions)
+	return []
 }
 
 private canReportBattery() {
@@ -337,6 +390,10 @@ private handleContactEvent(alarmLevel, attr) {
 	if (settings?.mainContactBehavior?.contains("Only")) {
 		displayed = false
 	}
+	
+	if (attr == "externalContact") {
+		handleChildContactEvent(val)
+	}
 
 	result << createEvent(getEventMap("$attr", val, displayed))
 	
@@ -345,6 +402,24 @@ private handleContactEvent(alarmLevel, attr) {
 		result << createEvent(getEventMap("contact", mainVal))
 	}
 	return result
+}
+
+private void handleChildContactEvent(val) {
+	def child = getChildDevice()
+	if (child ) {
+		logDebug "Executing Child ${val.capitalize()}()"
+		if (val == "open") {
+			child?.open()
+		}
+		else {
+			child?.close()
+		}
+	}
+	return null
+}
+
+private getChildDevice() {
+	return getChildDevices()?.find { it && "${it}" != "null" }
 }
 
 private getMainContactVal(activeAttr, activeVal, otherVal) {
@@ -411,6 +486,10 @@ private wakeUpIntervalSetCmd(minutesVal) {
 }
 
 // Settings
+private getUseExternalDeviceSetting() {
+	return settings?.useExternalDevice ?: false
+}
+
 private getCheckinIntervalSettingMinutes() {
 	return convertOptionSettingToInt(checkinIntervalOptions, checkinIntervalSetting) ?: 360
 }
@@ -464,6 +543,15 @@ private safeToInt(val, defaultVal=-1) {
 	return "${val}"?.isInteger() ? "${val}".toInteger() : defaultVal
 }
 
+private convertToLocalTimeString(dt) {
+	def timeZoneId = location?.timeZone?.ID
+	if (timeZoneId) {
+		return dt.format("MM/dd/yyyy hh:mm:ss a", TimeZone.getTimeZone(timeZoneId))
+	}
+	else {
+		return "$dt"
+	}	
+}
 
 private isDuplicateCommand(lastExecuted, allowedMil) {
 	!lastExecuted ? false : (lastExecuted + allowedMil > new Date().time) 
@@ -476,5 +564,5 @@ private logDebug(msg) {
 }
 
 private logTrace(msg) {
-	 // log.trace "$msg"
+	   // log.trace "$msg"
 }

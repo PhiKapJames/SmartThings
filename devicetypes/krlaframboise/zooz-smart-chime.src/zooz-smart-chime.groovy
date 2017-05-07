@@ -1,5 +1,5 @@
 /**
- *  Zooz Smart Chime v1.1
+ *  Zooz Smart Chime v1.2.1
  *  (Model: ZSE33)
  *
  *  Author: 
@@ -9,6 +9,13 @@
  *    
  *
  *  Changelog:
+ *
+ *    1.2.1 (04/23/2017)
+ *    	- SmartThings broke parse method response handling so switched to sendhubaction.
+ *    	- Bug fix for location timezone issue.
+ *
+ *    1.2 (04/14/2017)
+ *      - Added Switch Level capability
  *
  *    1.1 (02/19/2017)
  *      - Added Health Check and self polling.
@@ -41,6 +48,7 @@ metadata {
 		capability "Tone"
 		capability "Health Check"
 		capability "Polling"
+		capability "Switch Level"
 		
 		attribute "lastCheckin", "string"
 		
@@ -224,7 +232,7 @@ def updated() {
 			def result = []
 			result += configure()
 			if (result) {
-				return response(result)
+				return sendResponse(result)
 			}
 		}
 		else {
@@ -232,6 +240,15 @@ def updated() {
 			state.firstUpdate = false
 		}
 	}	
+}
+
+private sendResponse(cmds) {
+	def actions = []
+	cmds?.each { cmd ->
+		actions << new physicalgraph.device.HubAction(cmd)
+	}	
+	sendHubCommand(actions)
+	return []
 }
 
 private initializeCheckin() {
@@ -339,6 +356,27 @@ def on() {
 	return chimePlayCmds(onChimeSoundSetting)
 }
 
+def setLevel(level, rate=null) {
+	logTrace "Executing setLevel($level)"
+	if (!device.currentValue("level")) {
+		sendEvent(name:"level", value:0, displayed:false)
+	}
+	return customChime(extractSoundFromLevel(level))	
+}
+
+private extractSoundFromLevel(level) {
+	def sound = safeToInt(level, 1)
+	if (sound <= 10) {
+		return 1
+	}
+	else {
+		if ((sound % 10) != 0) {
+			sound = (sound - (sound % 10))
+		}
+		return (sound / 10)
+	}
+}
+
 def beep() {
 	logDebug "Playing Beep Chime (#${beepChimeSoundSetting})"	
 	addPendingSound("status", "beep")
@@ -437,7 +475,13 @@ private createLastCheckinEvent() {
 }
 
 private convertToLocalTimeString(dt) {
-	return dt.format("MM/dd/yyyy hh:mm:ss a", TimeZone.getTimeZone(location.timeZone.ID))
+	def timeZoneId = location?.timeZone?.ID
+	if (timeZoneId) {
+		return dt.format("MM/dd/yyyy hh:mm:ss a", TimeZone.getTimeZone(timeZoneId))
+	}
+	else {
+		return "$dt"
+	}	
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.batteryv1.BatteryReport cmd) {
@@ -475,7 +519,7 @@ def zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicReport cmd) {
 		result += handleDeviceOff()
 	}
 	else {
-		result += response(["delay 3000", basicGetCmd()])
+		result += sendResponse(["delay 3000", basicGetCmd()])
 	}	
 	return result
 }

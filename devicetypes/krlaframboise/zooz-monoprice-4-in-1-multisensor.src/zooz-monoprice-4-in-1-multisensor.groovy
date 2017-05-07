@@ -1,5 +1,5 @@
 /**
- *  Zooz/Monoprice 4-in-1 Multisensor 1.3.1
+ *  Zooz/Monoprice 4-in-1 Multisensor 1.3.4
  *
  *  Zooz Z-Wave 4-in-1 Sensor (ZSE40)
  *
@@ -12,6 +12,15 @@
  *    
  *
  *  Changelog:
+ *
+ *    1.3.4 (04/29/2017)
+ *    	- Made refresh command return null to fix possible issue it's causing with webCoRE.
+ *
+ *    1.3.3 (04/23/2017)
+ *    	- SmartThings broke parse method response handling so switched to sendhubaction.
+ *
+ *    1.3.2 (04/20/2017)
+ *      - Added workaround for ST Health Check bug.
  *
  *    1.3.1 (03/28/2017)
  *      - Added setting for reporting max lux illuminance.
@@ -291,7 +300,7 @@ def updated() {
 			sendEvent(createEventMap("tamper", "clear"))
 		}
 
-		logForceWakeupMessage "The configuration will be updated the next time the device wakes up."
+		logForceWakeupMessage("The configuration will be updated the next time the device wakes up.")
 		state.pendingChanges = true
 	}	
 }
@@ -356,7 +365,16 @@ def configure() {
 	else {
 		cmds += refreshSensorData()
 	}
-	return response(cmds)
+	return sendResponse(cmds)
+}
+
+private sendResponse(cmds) {
+	def actions = []
+	cmds?.each { cmd ->
+		actions << new physicalgraph.device.HubAction(cmd)
+	}	
+	sendHubCommand(actions)
+	return []
 }
 
 private initializeCheckin() {
@@ -520,6 +538,8 @@ private getLedIndicatorModeParamNum() { return 7 }
 def parse(String description) {
 	def result = []
 	
+	sendEvent(name: "lastCheckin", value: convertToLocalTimeString(new Date()), displayed: false, isStateChange: true)
+	
 	if (description.startsWith("Err 106")) {
 		state.useSecureCmds = false
 		log.warn "Secure Inclusion Failed: ${description}"
@@ -537,23 +557,8 @@ def parse(String description) {
 		else {
 			logDebug "Unable to parse description: $description"
 		}
-	}
-	
-	if (!isDuplicateCommand(state.lastCheckinTime, 60000)) {
-		result << createLastCheckinEvent()
-	}
-	
+	}	
 	return result
-}
-
-private createLastCheckinEvent() {
-	logTrace "Device Checked In"
-	state.lastCheckinTime = new Date().time
-	return createEvent(name: "lastCheckin", value: convertToLocalTimeString(new Date()), displayed: false)
-}
-
-private convertToLocalTimeString(dt) {
-	return dt.format("MM/dd/yyyy hh:mm:ss a", TimeZone.getTimeZone(location.timeZone.ID))
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.securityv1.SecurityMessageEncapsulation cmd) {
@@ -617,7 +622,7 @@ def zwaveEvent(physicalgraph.zwave.commands.wakeupv2.WakeUpNotification cmd)
 	}
 	result << wakeUpNoMoreInfoCmd()
 	
-	return response(result)
+	return sendResponse(result)
 }
 
 private canReportBattery() {
@@ -924,9 +929,10 @@ def refresh() {
 		sendEvent(createTamperEventMap("clear"))		
 	}
 	else {
-		logForceWakeupMessage "The sensor data will be refreshed the next time the device wakes up."
+		logForceWakeupMessage("The sensor data will be refreshed the next time the device wakes up.")
 		state.pendingRefresh = true
 	}
+	return null
 }
 
 private createTamperEventMap(val) {
@@ -1046,6 +1052,16 @@ private safeToInt(val, defaultVal=0) {
 
 private safeToDec(val, defaultVal=0) {
 	return "${val}"?.isBigDecimal() ? "${val}".toBigDecimal() : defaultVal
+}
+
+private convertToLocalTimeString(dt) {
+	def timeZoneId = location?.timeZone?.ID
+	if (timeZoneId) {
+		return dt.format("MM/dd/yyyy hh:mm:ss a", TimeZone.getTimeZone(timeZoneId))
+	}
+	else {
+		return "$dt"
+	}	
 }
 
 private isDuplicateCommand(lastExecuted, allowedMil) {

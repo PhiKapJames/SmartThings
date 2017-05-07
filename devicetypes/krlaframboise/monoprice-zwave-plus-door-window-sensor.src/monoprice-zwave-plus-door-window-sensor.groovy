@@ -1,5 +1,5 @@
 /**
- *  Monoprice Z-Wave Plus Door/Window Sensor 1.1.2
+ *  Monoprice Z-Wave Plus Door/Window Sensor 1.1.4
  *  (P/N 15270)
  *
  *  Author: 
@@ -9,6 +9,12 @@
  *    
  *
  *  Changelog:
+ *
+ *    1.1.4 (04/23/2017)
+ *    	- SmartThings broke parse method response handling so switched to sendhubaction.
+ *
+ *    1.1.3 (04/20/2017)
+ *      - Added workaround for ST Health Check bug.
  *
  *    1.1.2 (03/12/2017)
  *      - Adjusted health check to allow it to skip a checkin before going offline.
@@ -157,8 +163,8 @@ def configure() {
 }
 
 private initializeCheckin() {
-	// Set the Health Check interval so that it can be skipped once plus 2 minutes.
-	def checkInterval = ((checkinIntervalSettingSeconds * 2) + (2 * 60))
+	// Set the Health Check interval so that it can be skipped twice plus 5 minutes.
+	def checkInterval = ((checkinIntervalSettingSeconds * 3) + (5 * 60))
 	
 	sendEvent(name: "checkInterval", value: checkInterval, displayed: false, data: [protocol: "zwave", hubHardwareId: device.hub.hardwareID])
 }
@@ -179,6 +185,8 @@ private getCheckinIntervalSettingSeconds() {
 def parse(String description) {
 	def result = []
 	
+	sendEvent(name: "lastCheckin", value: convertToLocalTimeString(new Date()), displayed: false, isStateChange: true)
+	
 	if (description.startsWith("Err 106")) {
 		state.useSecureCmds = false
 		log.warn "Secure Inclusion Failed: ${description}"
@@ -197,23 +205,7 @@ def parse(String description) {
 			logDebug "Unable to parse description: $description"
 		}
 	}
-	
-	if (!isDuplicateCommand(state.lastCheckinTime, 60000)) {
-		result << createLastCheckinEvent()
-	}
-	
 	return result
-}
-
-
-private createLastCheckinEvent() {
-	logDebug "Device Checked In"
-	state.lastCheckinTime = new Date().time
-	return createEvent(name: "lastCheckin", value: convertToLocalTimeString(new Date()), displayed: false)
-}
-
-private convertToLocalTimeString(dt) {
-	return dt.format("MM/dd/yyyy hh:mm:ss a", TimeZone.getTimeZone(location.timeZone.ID))
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.securityv1.SecurityMessageEncapsulation cmd) {
@@ -273,7 +265,16 @@ def zwaveEvent(physicalgraph.zwave.commands.wakeupv2.WakeUpNotification cmd)
 	}
 	
 	cmds << wakeUpNoMoreInfoCmd()
-	return response(cmds)
+	return sendResponse(cmds)
+}
+
+private sendResponse(cmds) {
+	def actions = []
+	cmds?.each { cmd ->
+		actions << new physicalgraph.device.HubAction(cmd)
+	}	
+	sendHubCommand(actions)
+	return []
 }
 
 private canReportBattery() {
@@ -461,6 +462,16 @@ private secureCmd(cmd) {
 
 private canSendConfiguration() {
 	return (!state.isConfigured || state.pendingRefresh != false	|| state.pendingChanges != false)
+}
+
+private convertToLocalTimeString(dt) {
+	def timeZoneId = location?.timeZone?.ID
+	if (timeZoneId) {
+		return dt.format("MM/dd/yyyy hh:mm:ss a", TimeZone.getTimeZone(timeZoneId))
+	}
+	else {
+		return "$dt"
+	}	
 }
 
 private isDuplicateCommand(lastExecuted, allowedMil) {
